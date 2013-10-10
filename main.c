@@ -1,5 +1,8 @@
 #include <iwlib.h>
 #include <getopt.h>
+#include <sys/ioctl.h>
+#include <linux/if_packet.h>
+#include <linux/if_ether.h>
 
 void _die() {
     exit(EXIT_FAILURE);
@@ -63,7 +66,7 @@ int prompt_choose(int limit)
     while(getchar() != '\n')
        ;
     while(choice < 0 || choice >= limit) {
-        info("invalid choice number.\nInsert a valid one:");
+        info("invalid choice. Insert a valid one:");
         scanf("%d",&choice);
         while(getchar() != '\n')
             ;
@@ -72,16 +75,63 @@ int prompt_choose(int limit)
     return choice;
 }
 
+struct sockaddr get_mac(int iw_sock, char *interface)
+{
+    struct ifreq hw;
+    memset(&hw, 0, sizeof (struct ifreq));
+    strncpy(hw.ifr_name, interface, strlen(interface));
+
+    if(ioctl(iw_sock, SIOCGIFHWADDR, &hw) < 0)
+        die("ioctl: %s",strerror(errno));
+
+    return hw.ifr_hwaddr;
+}
+
+int get_ifindex(int iw_sock, char *interface)
+{
+    struct ifreq hw;
+    memset(&hw, 0, sizeof (struct ifreq));
+    strncpy(hw.ifr_name, interface, strlen(interface));
+    if(ioctl(iw_sock, SIOCGIFINDEX, &hw) < 0)
+        die("ioctl: %s",strerror(errno));
+
+    return hw.ifr_ifindex;
+}
+
+struct rts_frame
+{
+    uint16_t control;
+    uint16_t duration;
+    uint8_t ra[ETH_ALEN];
+    uint8_t ta[ETH_ALEN];
+    uint32_t fcs;
+} rts_frame;
+
+struct cts_frame
+{
+    uint16_t control;
+    uint16_t duration;
+    uint8_t ra[ETH_ALEN];
+    uint32_t fcs;
+} cts_frame;
+
+#define ack_frame   cts_frame
 
 int
 main(int argc, char **argv) {
 
-    int iw_sock, optIndex = -1;
+    int iw_sock, optIndex = -1, eth_sock;
     iw_enum_handler fn;
-    char *essid = NULL, *interface = NULL,  valid;
+    char *essid = NULL, *interface = NULL,  valid, eth_addr[17];
     extern int opterr;
     wireless_scan_head context;
     wireless_scan *scanResult;
+
+    struct sockaddr me;
+    struct sockaddr_ll packet_sockaddr; //packet version of sockaddr 
+    struct rts_frame rts;
+    struct cts_frame cts;
+    uint16_t proto_port = htons(ETH_P_ALL);
 
     static struct option long_options[] =
     {
@@ -149,6 +199,20 @@ main(int argc, char **argv) {
     }
     while(!valid);
 
+    //getting my MAC interface address
+
+    me = get_mac(iw_sock, interface);
+
+    printf("%s MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+            interface,
+            (unsigned char) me.sa_data[0],
+            (unsigned char) me.sa_data[1],
+            (unsigned char) me.sa_data[2],
+            (unsigned char) me.sa_data[3],
+            (unsigned char) me.sa_data[4],
+            (unsigned char) me.sa_data[5]
+          );
+
     //essid selection and validation
     valid = 0;
     do
@@ -161,7 +225,7 @@ main(int argc, char **argv) {
                 while(valid != 'y') {
 
                     for(scanResult = context.result, optIndex = 0; scanResult != NULL; scanResult = scanResult->next, ++optIndex) { //linked list
-                        info("%d: %s",optIndex, (scanResult->b).essid);
+                        printf("%d: %s - %s\n",optIndex, (scanResult->b).has_essid && (scanResult->b).essid_on ? (scanResult->b).essid : "Hidden network", iw_saether_ntop(&(scanResult->ap_addr),eth_addr));
                     }
 
                     if(optIndex < 1) {
@@ -214,8 +278,53 @@ main(int argc, char **argv) {
 
     //now i've got a valid interface and a valid network, let's enter in layer 2 of iso/osi model and make some magic
 
+    proto_port = htons(ETH_P_ALL);
+
+    if( (eth_sock = socket(AF_PACKET, SOCK_RAW, proto_port)) < 0) //protocol defined in linux/if_ether.h
+        die("%s",strerror(errno));
+
+    //fill ethernet frame header
+    memset(&rts, 0, sizeof (struct rts_frame));
+    rts.control = 0x4b00;
+    rts.duration = 3800;
+    memcpy(rts.ra, scanResult->ap_addr.sa_data, ETH_ALEN);
+    memcpy(rts.ta, me.sa_data, ETH_ALEN);
+
+    //fille sockaddr_ll (packet_sockaddr)
+    memset(&packet_sockaddr, 0, sizeof (struct sockaddr_ll));
+    packet_sockaddr.sll_family = AF_PACKET; //always
+    packet_sockaddr.sll_halen = ETH_ALEN; //address length
+    packet_sockaddr.sll_ifindex = get_ifindex(iw_sock, interface);
+    memcpy(&(packet_sockaddr.sll_addr),&(scanResult->ap_addr), ETH_ALEN);
+
+    //BEGIN TEST source code
+
+    for(;;)
+    {
+        if(sendto(eth_sock, &rts, sizeof (struct rts_frame) , 0,(struct sockaddr *) &packet_sockaddr, sizeof(struct sockaddr_ll)) < 0)
+            die("sendto: %s",strerror(errno));
+
+        if(recvfrom(eth_sock, &cts, sizeof (struct cts_frame), 0, NULL, 0) < 0)
+            die("recvfrom: %s", strerror(errno));
+
+        //Frame type must be identified by checking value of type and subtype bits in control (bitmask)
+        info("Frame received!\nControl: %u\nDuration: %u\nra: %02X:%02X:%02X:%02X:%02X:%02X\n fcs: %d",
+                cts.control,
+                cts.duration,
+                (unsigned char)cts.ra[0],
+                (unsigned char)cts.ra[1],
+                (unsigned char)cts.ra[2],
+                (unsigned char)cts.ra[3],
+                (unsigned char)cts.ra[4],
+                (unsigned char)cts.ra[5],
+                cts.fcs
+            );
+    }
+    //END TESTING
+
     //clean up
     iw_sockets_close(iw_sock);
+    close(eth_sock);
     free(interface);
     free(essid);
 
