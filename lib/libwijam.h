@@ -52,4 +52,16 @@ static inline void help(void)
 With no OPTION, or when INTERFACE is invalid, begin dynamic mode.");
 }
 
+#if WT_VERSION > 29
+    /*------------------------------------------------------------------
+     *  * Display an Ethernet Socket Address in readable format.
+     */
+    static inline char *
+    iw_saether_ntop(const struct sockaddr *sap, char* bufp)
+    {
+        iw_ether_ntop((const struct ether_addr *) sap->sa_data, bufp);
+        return bufp;
+    }
+#endif
+
 #endif

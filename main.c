@@ -109,7 +109,10 @@ main(int argc, char **argv) {
                 while(valid != 'y') {
 
                     for(scanResult = context.result, optIndex = 0; scanResult != NULL; scanResult = scanResult->next, ++optIndex) { //linked list
-                        printf("%d: %s - %s\n",optIndex, (scanResult->b).has_essid && (scanResult->b).essid_on ? (scanResult->b).essid : "Hidden network", iw_saether_ntop(&(scanResult->ap_addr),eth_addr));
+                        printf("%d: %s - %s\n",optIndex,
+                                (scanResult->b).has_essid && (scanResult->b).essid_on ? (scanResult->b).essid : "Hidden network",
+                                iw_saether_ntop(&(scanResult->ap_addr),eth_addr)
+                              );
                     }
 
                     if(optIndex < 1) {
