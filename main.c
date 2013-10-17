@@ -1,8 +1,7 @@
 #include "lib/libwijam.h"
 
-int
-main(int argc, char **argv) {
-
+int main(int argc, char **argv)
+{
     int iw_sock, optIndex = -1, eth_sock;
     iw_enum_handler fn;
     char *essid = NULL, *interface = NULL,  valid, eth_addr[17];
@@ -13,8 +12,12 @@ main(int argc, char **argv) {
 
     struct sockaddr me;
     struct sockaddr_ll packet_sockaddr; //packet version of sockaddr 
+
+    struct generic_frame frame;
+    unsigned char subtype;
+    struct cts_frame *cts;
     struct rts_frame rts;
-    struct cts_frame cts;
+
     uint16_t proto_port = htons(ETH_P_ALL);
 
     static struct option long_options[] =
@@ -116,7 +119,7 @@ main(int argc, char **argv) {
                     }
 
                     if(optIndex < 1) {
-                        info("no network found.. retry? [y/n]");
+                        info("no network found... Retry? [y/n]");
                         valid = prompt_choose('n');
                         if(optIndex != 'y') {
                             return EXIT_SUCCESS;
@@ -127,7 +130,7 @@ main(int argc, char **argv) {
                     }
                 }
 
-                info("select target essid: ");
+                info("select target network: ");
                 optIndex = prompt_choose(optIndex);
 
                 for(scanResult = context.result, valid = 0; valid < optIndex; ++valid, scanResult = scanResult->next) 
@@ -172,7 +175,8 @@ main(int argc, char **argv) {
 
     //fill ethernet frame header
     memset(&rts, 0, sizeof (struct rts_frame));
-    rts.control = 0x4b00;
+    rts.control.bits.type = _FRAME_TYPE_CONTROL;
+    rts.control.bits.subtype = _FRAME_SUBTYPE_RTS;
     rts.duration = 3800;
     memcpy(rts.ra, scanResult->ap_addr.sa_data, ETH_ALEN);
     memcpy(rts.ta, me.sa_data, ETH_ALEN);
@@ -185,27 +189,31 @@ main(int argc, char **argv) {
     memcpy(&(packet_sockaddr.sll_addr),&(scanResult->ap_addr), ETH_ALEN);
 
     //BEGIN TEST source code
-
-    for(;;)
+//    for(;;)
     {
         if(sendto(eth_sock, &rts, sizeof (struct rts_frame) , 0,(struct sockaddr *) &packet_sockaddr, sizeof(struct sockaddr_ll)) < 0)
             die("sendto: %s",strerror(errno));
-
-        if(recvfrom(eth_sock, &cts, sizeof (struct cts_frame), 0, NULL, 0) < 0)
+      
+        if(recvfrom(eth_sock, &frame, sizeof (struct generic_frame), 0, NULL, 0) < 0)
             die("recvfrom: %s", strerror(errno));
 
-        //Frame type must be identified by checking value of type and subtype bits in control (bitmask)
-        info("Frame received!\nControl: %u\nDuration: %u\nra: %02X:%02X:%02X:%02X:%02X:%02X\n fcs: %d",
-                cts.control,
-                cts.duration,
-                (unsigned char)cts.ra[0],
-                (unsigned char)cts.ra[1],
-                (unsigned char)cts.ra[2],
-                (unsigned char)cts.ra[3],
-                (unsigned char)cts.ra[4],
-                (unsigned char)cts.ra[5],
-                cts.fcs
+        subtype = get_frame_subtype(frame.frame_control);
+        info("Frame: type: %s : subtype: %s",get_frame_type_string(frame.frame_control), get_frame_subtype_string(frame.frame_control));
+        if(subtype == _FRAME_SUBTYPE_CTS)
+        {
+            cts = (struct cts_frame *) &frame;
+            info("CTS: \nControl: %u\nDuration: %u\nra: %02X:%02X:%02X:%02X:%02X:%02X\n fcs: %d",
+                cts->control.buffer,
+                cts->duration,
+                (unsigned char)cts->ra[0],
+                (unsigned char)cts->ra[1],
+                (unsigned char)cts->ra[2],
+                (unsigned char)cts->ra[3],
+                (unsigned char)cts->ra[4],
+                (unsigned char)cts->ra[5],
+                cts->fcs
             );
+        }
     }
     //END TESTING
 
